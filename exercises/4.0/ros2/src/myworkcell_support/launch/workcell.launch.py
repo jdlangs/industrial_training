@@ -70,7 +70,7 @@ def generate_launch_description():
             emulate_tty=True,
             parameters=[
                 {
-                    'base_frame': 'table',
+                    'base_frame': 'world',
                     'robot_description': robot_description,
                     'robot_description_semantic': robot_description_semantic,
                     'robot_description_kinematics': kinematics_config,
