@@ -40,22 +40,22 @@ def generate_launch_description():
 
     return launch.LaunchDescription([
         launch_ros.actions.Node(
-            node_name='robot_state_publisher',
+            name='robot_state_publisher',
             package='robot_state_publisher',
-            node_executable='robot_state_publisher',
+            executable='robot_state_publisher',
             output='screen',
             arguments=[urdf_file],
         ),
         launch_ros.actions.Node(
-            node_name='joint_state_publisher_gui',
+            name='joint_state_publisher_gui',
             package='joint_state_publisher_gui',
-            node_executable='joint_state_publisher_gui',
+            executable='joint_state_publisher_gui',
             output='screen',
         ),
         launch_ros.actions.Node(
-            node_name='rviz',
+            name='rviz',
             package='rviz2',
-            node_executable='rviz2',
+            executable='rviz2',
             output='screen',
         )
     ])
