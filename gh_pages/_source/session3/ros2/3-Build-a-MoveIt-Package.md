@@ -221,32 +221,157 @@ The MoveIt package created using the setup assistant in ROS1 can be significantl
 
     This step allows for plans created by MoveIt2 to be executed, but only by an instance of a "fake_joint_trajectory_controller". This will be our stand-in for a physical robot later on in the training.
 
- 1. Create a new file, `config/moveit.yaml` and place the following lines in it:
+ 1. Open the `config/controllers.yaml` and replace the content with the following:
 
     ```
-    planning_scene_monitor_options:
-      name: "planning_scene_monitor"
-      robot_description: "robot_description"
-      joint_state_topic: "/joint_states"
-      attached_collision_object_topic: "/moveit_cpp/planning_scene_monitor"
-      publish_planning_scene_topic: "/moveit_cpp/publish_planning_scene"
-      monitored_planning_scene_topic: "/moveit_cpp/monitored_planning_scene"
-      wait_for_initial_state_timeout: 10.0
+    controller_names:
+      - fake_joint_trajectory_controller
 
-    planning_pipelines:
-      pipeline_names: ["ompl"]
-
-    plan_request_params:
-      planning_attempts: 10
-      planning_pipeline: ompl
-      max_velocity_scaling_factor: 1.0
-      max_acceleration_scaling_factor: 1.0
+    fake_joint_trajectory_controller:
+      action_ns: follow_joint_trajectory
+      type: FollowJointTrajectory
+      default: true
+      joints:
+        - shoulder_pan_joint
+        - shoulder_lift_joint
+        - elbow_joint
+        - wrist_1_joint
+        - wrist_2_joint
+        - wrist_3_joint
     ```
 
- 1. Open the new package's `CMakeLists.txt` file and add an installation rule for the `config/` directory underneath the calls to `find_package`:
+ 1. Create a new launch file, `launch/myworkcell_planning_execution.launch.py` which will act as a single location to start up all components needed for both planning and execution.
 
     ```
-    install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
+    import os
+    import yaml
+    import launch
+    import launch_ros
+    from ament_index_python import get_package_share_directory
+
+    def get_package_file(package, file_path):
+        """Get the location of a file installed in an ament package"""
+        package_path = get_package_share_directory(package)
+        absolute_file_path = os.path.join(package_path, file_path)
+        return absolute_file_path
+
+    def load_file(file_path):
+        """Load the contents of a file into a string"""
+        try:
+            with open(file_path, 'r') as file:
+                return file.read()
+        except EnvironmentError: # parent of IOError, OSError *and* WindowsError where available
+            return None
+
+    def load_yaml(file_path):
+        """Load a yaml file into a dictionary"""
+        try:
+            with open(file_path, 'r') as file:
+                return yaml.safe_load(file)
+        except EnvironmentError: # parent of IOError, OSError *and* WindowsError where available
+            return None
+
+    def run_xacro(xacro_file):
+        """Run xacro and output a file in the same directory with the same name, w/o a .xacro suffix"""
+        urdf_file, ext = os.path.splitext(xacro_file)
+        if ext != '.xacro':
+            raise RuntimeError(f'Input file to xacro must have a .xacro extension, got {xacro_file}')
+        os.system(f'xacro {xacro_file} -o {urdf_file}')
+        return urdf_file
+
+
+    def generate_launch_description():
+        xacro_file = get_package_file('myworkcell_support', 'urdf/workcell.urdf.xacro')
+        urdf_file = run_xacro(xacro_file)
+        srdf_file = get_package_file('myworkcell_moveit_config', 'config/myworkcell.srdf')
+        kinematics_file = get_package_file('myworkcell_moveit_config', 'config/kinematics.yaml')
+        ompl_config_file = get_package_file('myworkcell_moveit_config', 'config/ompl_planning.yaml')
+        controllers_file = get_package_file('myworkcell_moveit_config', 'config/controllers.yaml')
+
+        robot_description = load_file(urdf_file)
+        robot_description_semantic = load_file(srdf_file)
+        kinematics_config = load_yaml(kinematics_file)
+        ompl_config = load_yaml(ompl_config_file)
+
+        moveit_controllers = {
+            'moveit_simple_controller_manager' : load_yaml(controllers_file),
+            'moveit_controller_manager': 'moveit_simple_controller_manager/MoveItSimpleControllerManager'
+        }
+        trajectory_execution = {
+            'moveit_manage_controllers': True,
+            'trajectory_execution.allowed_execution_duration_scaling': 1.2,
+            'trajectory_execution.allowed_goal_duration_margin': 0.5,
+            'trajectory_execution.allowed_start_tolerance': 0.01
+        }
+        planning_scene_monitor_config = {
+            'publish_planning_scene': True,
+            'publish_geometry_updates': True,
+            'publish_state_updates': True,
+            'publish_transforms_updates': True
+        }
+
+        return launch.LaunchDescription([
+            launch_ros.actions.Node(
+                #name='move_group_node',
+                package='moveit_ros_move_group',
+                executable='move_group',
+                output='screen',
+                parameters=[
+                    {
+                        'robot_description': robot_description,
+                        'robot_description_semantic': robot_description_semantic,
+                        'robot_description_kinematics': kinematics_config,
+                        'ompl': ompl_config,
+                    },
+                    moveit_controllers,
+                    trajectory_execution,
+                    planning_scene_monitor_config,
+                ],
+            ),
+            launch_ros.actions.Node(
+                name='robot_state_publisher',
+                package='robot_state_publisher',
+                executable='robot_state_publisher',
+                output='screen',
+                parameters=[
+                    {'robot_description': robot_description}
+                ]
+            ),
+            launch_ros.actions.Node(
+                package='fake_joint_driver',
+                executable='fake_joint_driver_node',
+                output='screen',
+                parameters=[
+                    {
+                        'robot_description': robot_description,
+                        'controller_name': 'fake_joint_trajectory_controller'
+                    },
+                    get_package_file("myworkcell_moveit_config", "config/fake_controllers.yaml"),
+                ],
+            ),
+            launch_ros.actions.Node(
+                name='rviz',
+                package='rviz2',
+                executable='rviz2',
+                output='screen',
+                parameters=[
+                    {
+                        'robot_description': robot_description,
+                        'robot_description_semantic': robot_description_semantic,
+                        'robot_description_kinematics': kinematics_config,
+                        'ompl': ompl_config,
+                    }
+                ],
+            )
+        ])
+    ```
+
+    The bulk of the complexity here is finding and loading all the required parameters using the same helper functions we've used in previous launch files. This launch file defines four nodes to start with the most important one being the move group node. Note that RViz is also started as node, which is purely optional.
+
+ 1. Open the new package's `CMakeLists.txt` file and add an installation rule for the `config/` and `launch/` directories underneath the calls to `find_package`:
+
+    ```
+    install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
     ```
 
  1. Rebuild the workspace:
