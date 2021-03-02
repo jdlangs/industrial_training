@@ -19,28 +19,29 @@ In this exercise, your goal is to modify the `myworkcell_core` node to:
 
 ## Scan-N-Plan Application: Guidance
 
-### Using MoveItCpp
+### Using MoveGroupInterface
 
  1. Edit your `myworkcell_node.cpp` file. In the `ScanNPlan` class's `start` method, use the response from the `LocalizePart` service to initialize a new `move_target` variable:
 
     ``` c++
-    geometry_msgs::msg::Pose move_target;
+    geometry_msgs::msg::PoseStamped move_target;
     move_target.header.frame_id = base_frame;
     move_target.pose = response->pose;
     ```
 
     * make sure to place this code _after_ the call to the vision_node's service.
 
- 1. Create a `MoveItCpp` object and a `PlanningComponent` object which will be used for performing the motion planning
+ 1. Create a `MoveGroupInterface` object which will be used for performing the motion planning
 
      1. Add these lines in the `start` function:
 
         ```
-        auto moveit_cpp = std::make_shared<moveit::planning_interface::MoveItCpp>(this->shared_from_this());
-        moveit::planning_interface::PlanningComponent arm("manipulator", moveit_cpp);
+        moveit::planning_interface::MoveGroupInterface move_group(
+            this->shared_from_this(),
+            "manipulator");
 
-        arm.setGoal(move_target, "tool0");
-        const auto plan_solution = arm.plan();
+        move_group.setPoseTarget(move_target);
+        move_group.move();
         ```
 
      1. Add required dependencies in your `CMakeLists.txt`:
@@ -48,7 +49,6 @@ In this exercise, your goal is to modify the `myworkcell_core` node to:
         ```
         find_package(moveit_msgs REQUIRED)
         find_package(moveit_ros_planning_interface REQUIRED)
-        find_package(Boost REQUIRED COMPONENTS system)
 
         ...
 
@@ -70,8 +70,7 @@ In this exercise, your goal is to modify the `myworkcell_core` node to:
      1. Add includes at the top of file for the needed MoveIt components:
 
         ```
-        #include <moveit/moveit_cpp/moveit_cpp.h>
-        #include <moveit/moveit_cpp/planning_component.h>
+        #include <moveit/move_group_interface/move_group_interface.h>
         ```
 
  1. Currently, MoveIt2 uses many parameters that are not declared ahead of time. To enable this, we have to construct our ROS2 node with an option to automatically declare parameters when they are set in a launch file. Modify the `ScanNPlan` constructor to start with the following:
@@ -89,28 +88,23 @@ In this exercise, your goal is to modify the `myworkcell_core` node to:
 
 ### Execution
 
- 1. Currently MoveIt2 doesn't support executing planned trajectories directly through the MoveIt interface. Instead, we will configure the node to manually send the planned trajectory to another node for execution. In the constructor, add a publisher for a joint trajectory:
+ 1. The `move` command is all that's needed to get your manipulator to move (with the right parameters) but some support when running MoveIt to have it function properly. Inside the `main` function, insert the following lines before you call `app->start`:
 
     ```
-    trajectory_pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
-      "fake_joint_trajectory_controller/joint_trajectory", rclcpp::QoS(1));
+    // Start spinning in a background thread so MoveIt internals can execute
+    std::thread worker{
+      [app]()
+      {
+        rclcpp::spin(app);
+      }
+    };
     ```
 
-    Add the `Publisher` as a member of the class alongside the already-existing service client variable:
+    This lets ROS process callbacks in a separate worker thread while the main thread remains available for us to define our application logic. This implies we can no longer call any spin functions in the main thread now. Replace the call to `spin_until_future_complete` in the `start` function with a function to simply wait for the future to be ready:
 
-    ```
-    rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr trajectory_pub_;
-    ```
-
- 1. Add the following lines after the motion planning code in the `start` function:
-
-    ```
-    if (plan_solution)
-    {
-      moveit_msgs::msg::RobotTrajectory robot_trajectory;
-      plan_solution.trajectory->getRobotTrajectoryMsg(robot_trajectory);
-      trajectory_pub_->publish(robot_trajectory.joint_trajectory);
-    }
+    ```diff
+    -if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), future) != rclcpp::executor::FutureReturnCode::SUCCESS)
+    +if (future.wait_for(std::chrono::seconds(3)) == std::future_status::timeout)
     ```
 
 ### Launch files and testing
@@ -156,36 +150,32 @@ In this exercise, your goal is to modify the `myworkcell_core` node to:
 
 
     def generate_launch_description():
-        moveit_config_file = get_package_file('myworkcell_moveit_config', 'config/moveit.yaml')
         xacro_file = get_package_file('myworkcell_support', 'urdf/workcell.urdf.xacro')
         urdf_file = run_xacro(xacro_file)
         srdf_file = get_package_file('myworkcell_moveit_config', 'config/myworkcell.srdf')
         kinematics_file = get_package_file('myworkcell_moveit_config', 'config/kinematics.yaml')
-        ompl_config_file = get_package_file('myworkcell_moveit_config', 'config/ompl_planning.yaml')
 
-        moveit_config = load_yaml(moveit_config_file)
         robot_description = load_file(urdf_file)
         robot_description_semantic = load_file(srdf_file)
         kinematics_config = load_yaml(kinematics_file)
-        ompl_config = load_yaml(ompl_config_file)
 
         return launch.LaunchDescription([
             launch_ros.actions.Node(
-                node_name='fake_ar_publisher_node',
+                name='fake_ar_publisher_node',
                 package='fake_ar_publisher',
-                node_executable='fake_ar_publisher_node',
+                executable='fake_ar_publisher_node',
                 output='screen',
             ),
             launch_ros.actions.Node(
-                node_name='vision_node',
+                name='vision_node',
                 package='myworkcell_core',
-                node_executable='vision_node',
+                executable='vision_node',
                 output='screen',
             ),
             launch_ros.actions.Node(
-                node_name='myworkcell_node',
+                name='myworkcell_node',
                 package='myworkcell_core',
-                node_executable='myworkcell_node',
+                executable='myworkcell_node',
                 output='screen',
                 parameters=[
                     {
@@ -193,42 +183,19 @@ In this exercise, your goal is to modify the `myworkcell_core` node to:
                         'robot_description': robot_description,
                         'robot_description_semantic': robot_description_semantic,
                         'robot_description_kinematics': kinematics_config,
-                        'ompl': ompl_config,
                     },
-                    moveit_config,
                 ],
             ),
         ])
     ```
 
-    * Note that this uses the same set of helper functions that we previously added to `urdf.launch.py`.
+    * Note that this uses the same set of helper functions as previous launch files
     * All of the extra complexity is used to build the set of parameters for the `myworkcell_node` node.
-
- 1. Modify `urdf.launch.py` to remove the GUI-based `joint_state_publisher`. It is replaced by a `fake_joint_driver` node which is our stand in for the robot and is the node that will receive the joint trajectory that `myworkcell_node` publishes.
-
-    ```diff
-    -launch_ros.actions.Node(
-    -    node_name='joint_state_publisher_gui',
-    -    package='joint_state_publisher_gui',
-    -    node_executable='joint_state_publisher_gui',
-    -    output='screen',
-    -),
-
-    +launch_ros.actions.Node(
-    +    package='fake_joint_driver',
-    +    node_executable='fake_joint_driver_node',
-    +    output='screen',
-    +    parameters=[
-    +        {'robot_description': load_file(urdf_file)},
-    +        get_package_file("myworkcell_moveit_config", "config/fake_controllers.yaml"),
-    +    ],
-    +),
-    ```
 
  1. Now let's test the system!
 
     ``` bash
     colcon build
-    ros2 launch myworkcell_support urdf.launch.py
+    ros2 launch myworkcell_moveit_config myworkcell_planning_execution.launch.py
     ros2 launch myworkcell_support workcell.launch.py
     ```
