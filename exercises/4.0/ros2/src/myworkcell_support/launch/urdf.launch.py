@@ -36,36 +36,28 @@ def run_xacro(xacro_file):
 
 def generate_launch_description():
     xacro_file = get_package_file('myworkcell_support', 'urdf/workcell.urdf.xacro')
-    urdf_file = run_xacro(xacro_file)
+    urdf_xml = load_file(run_xacro(xacro_file))
 
     return launch.LaunchDescription([
         launch_ros.actions.Node(
-            node_name='robot_state_publisher',
+            name='robot_state_publisher',
             package='robot_state_publisher',
-            node_executable='robot_state_publisher',
+            executable='robot_state_publisher',
             output='screen',
-            arguments=[urdf_file],
-        ),
-        #launch_ros.actions.Node(
-            #node_name='joint_state_publisher_gui',
-            #package='joint_state_publisher_gui',
-            #node_executable='joint_state_publisher_gui',
-            #output='screen',
-        #),
-        launch_ros.actions.Node(
-            package='fake_joint_driver',
-            node_executable='fake_joint_driver_node',
-            output='screen',
-            emulate_tty=True,
             parameters=[
-                {'robot_description': load_file(urdf_file)},
-                get_package_file("myworkcell_moveit_config", "config/fake_controllers.yaml"),
-            ],
+                {'robot_description': urdf_xml}
+            ]
         ),
         launch_ros.actions.Node(
-            node_name='rviz',
+            name='joint_state_publisher_gui',
+            package='joint_state_publisher_gui',
+            executable='joint_state_publisher_gui',
+            output='screen',
+        ),
+        launch_ros.actions.Node(
+            name='rviz',
             package='rviz2',
-            node_executable='rviz2',
+            executable='rviz2',
             output='screen',
         )
     ])

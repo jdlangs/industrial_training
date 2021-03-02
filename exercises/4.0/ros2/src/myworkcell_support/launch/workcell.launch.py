@@ -36,47 +36,40 @@ def run_xacro(xacro_file):
 
 
 def generate_launch_description():
-    moveit_config_file = get_package_file('myworkcell_moveit_config', 'config/moveit.yaml')
     xacro_file = get_package_file('myworkcell_support', 'urdf/workcell.urdf.xacro')
     urdf_file = run_xacro(xacro_file)
     srdf_file = get_package_file('myworkcell_moveit_config', 'config/myworkcell.srdf')
     kinematics_file = get_package_file('myworkcell_moveit_config', 'config/kinematics.yaml')
-    ompl_config_file = get_package_file('myworkcell_moveit_config', 'config/ompl_planning.yaml')
 
-    moveit_config = load_yaml(moveit_config_file)
     robot_description = load_file(urdf_file)
     robot_description_semantic = load_file(srdf_file)
     kinematics_config = load_yaml(kinematics_file)
-    ompl_config = load_yaml(ompl_config_file)
 
     return launch.LaunchDescription([
         launch_ros.actions.Node(
-            node_name='fake_ar_publisher_node',
+            name='fake_ar_publisher_node',
             package='fake_ar_publisher',
-            node_executable='fake_ar_publisher_node',
+            executable='fake_ar_publisher_node',
             output='screen',
         ),
         launch_ros.actions.Node(
-            node_name='vision_node',
+            name='vision_node',
             package='myworkcell_core',
-            node_executable='vision_node',
+            executable='vision_node',
             output='screen',
         ),
         launch_ros.actions.Node(
-            node_name='myworkcell_node',
+            name='myworkcell_node',
             package='myworkcell_core',
-            node_executable='myworkcell_node',
+            executable='myworkcell_node',
             output='screen',
-            emulate_tty=True,
             parameters=[
                 {
                     'base_frame': 'world',
                     'robot_description': robot_description,
                     'robot_description_semantic': robot_description_semantic,
                     'robot_description_kinematics': kinematics_config,
-                    'ompl': ompl_config,
                 },
-                moveit_config,
             ],
         ),
     ])

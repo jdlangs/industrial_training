@@ -1,8 +1,8 @@
 #include <rclcpp/rclcpp.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <myworkcell_core/srv/localize_part.hpp>
 
-#include <moveit/moveit_cpp/moveit_cpp.h>
-#include <moveit/moveit_cpp/planning_component.h>
+#include <moveit/move_group_interface/move_group_interface.h>
 
 class ScanNPlan : public rclcpp::Node
 {
@@ -15,8 +15,6 @@ public:
     }
 
     vision_client_ = this->create_client<myworkcell_core::srv::LocalizePart>("localize_part");
-    trajectory_pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
-        "fake_joint_trajectory_controller/joint_trajectory", rclcpp::QoS(1));
   }
 
   void start(const std::string& base_frame)
@@ -29,7 +27,7 @@ public:
 
     auto future = vision_client_->async_send_request(request);
 
-    if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), future) != rclcpp::executor::FutureReturnCode::SUCCESS)
+    if (future.wait_for(std::chrono::seconds(3)) == std::future_status::timeout)
     {
       RCLCPP_ERROR(this->get_logger(), "Failed to receive LocalizePart service response");
       return;
@@ -51,27 +49,22 @@ public:
     move_target.header.frame_id = base_frame;
     move_target.pose = response->pose;
 
-    auto moveit_cpp = std::make_shared<moveit::planning_interface::MoveItCpp>(this->shared_from_this());
-    moveit::planning_interface::PlanningComponent arm("manipulator", moveit_cpp);
+    RCLCPP_INFO(this->get_logger(), "Creating move group interface");
+    moveit::planning_interface::MoveGroupInterface move_group(
+        this->shared_from_this(),
+        "manipulator");
 
-    arm.setGoal(move_target, "tool0");
+    RCLCPP_INFO(this->get_logger(), "Setting move target pose");
+    move_group.setPoseTarget(move_target);
 
-    RCLCPP_INFO(this->get_logger(), "Generating motion plan to target pose");
-    const auto plan_solution = arm.plan();
-
-    RCLCPP_INFO(this->get_logger(), "Sending trajectory for execution");
-    if (plan_solution)
-    {
-      moveit_msgs::msg::RobotTrajectory robot_trajectory;
-      plan_solution.trajectory->getRobotTrajectoryMsg(robot_trajectory);
-      trajectory_pub_->publish(robot_trajectory.joint_trajectory);
-    }
+    RCLCPP_INFO(this->get_logger(), "Ready to plan and move!");
+    move_group.move();
+    RCLCPP_INFO(this->get_logger(), "Move completed");
   }
 
 private:
   // Planning components
   rclcpp::Client<myworkcell_core::srv::LocalizePart>::SharedPtr vision_client_;
-  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr trajectory_pub_;
 };
 
 int main(int argc, char **argv)
@@ -88,9 +81,20 @@ int main(int argc, char **argv)
   //Wait for the vision node to receive data
   rclcpp::sleep_for(std::chrono::seconds(2));
 
-  app->start(base_frame);
-  rclcpp::spin(app);
+  // Start spinning in a background thread so MoveIt internals can execute
+  std::thread worker{
+    [app]()
+    {
+      rclcpp::spin(app);
+    }
+  };
 
+  // Run our application
+  app->start(base_frame);
   rclcpp::shutdown();
+
+  //Wait for the background worker to terminate
+  worker.join();
+
   return 0;
 }
